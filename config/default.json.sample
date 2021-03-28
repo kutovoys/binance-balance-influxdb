@@ -1,0 +1,18 @@
+{
+  "influxUrl": "http://123.123.123.123:8086",
+  "influxToken": "INFLUX_TOKEN",
+  "influxOrg": "INFLUX_ORGANIZATION",
+  "influxBucket": "INFLUX_BUCKET",
+  "users": [
+    {
+      "chatid": "user1",
+      "apikey": "BINANCE_APIKEY",
+      "secretkey": "BINANCE_SECRETKEY"
+    },
+    {
+      "chatid": "user2",
+      "apikey": "BINANCE_APIKEY",
+      "secretkey": "BINANCE_SECRETKEY"
+    }
+  ]
+}
