@@ -9,27 +9,29 @@ const org = config.get('influxOrg')
 const bucket = config.get('influxBucket')
 
 const client = new InfluxDB({ url: config.get('influxUrl'), token: token })
-
 credentialsArray = config.get('users')
 
 let timerId = setInterval(() => {
-  for (let index in credentialsArray) {
-    binanceRest = new api.BinanceRest({
-      key: credentialsArray[index].apikey,
-      secret: credentialsArray[index].secretkey,
-      timeout: 15000,
-      recvWindow: 10000,
-      disableBeautification: false,
-      baseUrl: 'https://api.binance.com/',
-    })
-    binanceRest.account().then(async (data) => {
-      balances = await makeBalanceArray(data)
-      totalBalances = await countBalances(balances)
-      console.log(totalBalances)
-      await writeToInflux(totalBalances, credentialsArray[index].chatid)
-    })
+  try {
+    for (let index in credentialsArray) {
+      binanceRest = new api.BinanceRest({
+        key: credentialsArray[index].apikey,
+        secret: credentialsArray[index].secretkey,
+        timeout: 15000,
+        recvWindow: 10000,
+        disableBeautification: false,
+        baseUrl: 'https://api.binance.com/',
+      })
+      binanceRest.account().then(async (data) => {
+        balances = await makeBalanceArray(data)
+        totalBalances = await getPrices(balances)
+        await writeToInflux(totalBalances, credentialsArray[index].chatid)
+      })
+    }
+  } catch (error) {
+    console.error(error)
   }
-}, 30000)
+}, 5000)
 
 async function makeBalanceArray(data) {
   balanceArray = []
@@ -47,39 +49,57 @@ async function makeBalanceArray(data) {
   return balanceArray
 }
 
-async function countBalances(balanceArray) {
-  for (let i in balanceArray) {
-    if (balanceArray[i].asset === 'BTC') {
-      price = await binanceRest.tickerPrice('BTCUSDT')
-      balanceArray[i].totalUSDT = (
-        balanceArray[i].count * +price.price
-      ).toFixed(4)
-      balanceArray[i].totalBTC = balanceArray[i].count.toFixed(8)
-    } else if (balanceArray[i].asset === 'USDT') {
-      price = await binanceRest.tickerPrice('BTCUSDT')
-      balanceArray[i].totalBTC = (balanceArray[i].count / +price.price).toFixed(
-        8
-      )
-      balanceArray[i].totalUSDT = balanceArray[i].count.toFixed(4)
+async function getPrices(dataArray) {
+  prices = await binanceRest.tickerPrice()
+  for (let index in dataArray) {
+    if (dataArray[index].asset === 'BTC') {
+      for (let i in prices) {
+        if (prices[i].symbol === 'BTCUSDT') {
+          dataArray[index].totalUSDT = (
+            dataArray[index].count * +prices[i].price
+          ).toFixed(4)
+          dataArray[index].totalBTC = dataArray[index].count.toFixed(8)
+          dataArray[index].priceUSDT = (+prices[i].price).toFixed(4)
+          dataArray[index].priceBTC = (+prices[i].price).toFixed(8)
+          BTCPrice = prices[i].price
+        }
+      }
+    } else if (dataArray[index].asset === 'USDT') {
+      for (let i in prices) {
+        if (prices[i].symbol === 'BTCUSDT') {
+          dataArray[index].totalUSDT = dataArray[index].count.toFixed(4)
+          dataArray[index].totalBTC = (
+            dataArray[index].count / +prices[i].price
+          ).toFixed(8)
+          dataArray[index].priceUSDT = (+prices[i].price).toFixed(4)
+          dataArray[index].priceBTC = (+prices[i].price).toFixed(8)
+        }
+      }
     } else {
-      priceBTC = await binanceRest.tickerPrice(balanceArray[i].asset + 'BTC')
-      balanceArray[i].totalBTC = (
-        balanceArray[i].count * +priceBTC.price
-      ).toFixed(8)
-      try {
-        priceUSDT = await binanceRest.tickerPrice(
-          balanceArray[i].asset + 'USDT'
-        )
-        balanceArray[i].totalUSDT = (
-          balanceArray[i].count * +priceUSDT.price
-        ).toFixed(4)
-      } catch (error) {
-        btcPrice = await binanceRest.tickerPrice('BTCUSDT')
-        balanceArray[i].totalUSDT = +balanceArray[i].totalBTC * +btcPrice.price
+      for (let i in prices) {
+        if (dataArray[index].asset + 'USDT' === prices[i].symbol) {
+          dataArray[index].priceUSDT = (+prices[i].price).toFixed(4)
+          dataArray[index].totalUSDT = (
+            +prices[i].price * dataArray[index].count
+          ).toFixed(4)
+        } else if (dataArray[index].asset + 'BTC' === prices[i].symbol) {
+          dataArray[index].priceBTC = (+prices[i].price).toFixed(8)
+          dataArray[index].totalBTC = (
+            +prices[i].price * dataArray[index].count
+          ).toFixed(8)
+        }
       }
     }
+    if (!('priceBTC' in dataArray[index] && 'priceUSDT' in dataArray[index])) {
+      dataArray[index].priceUSDT = (
+        BTCPrice * +dataArray[index].priceBTC
+      ).toFixed(4)
+      dataArray[index].totalUSDT = (
+        +dataArray[index].priceUSDT * dataArray[index].count
+      ).toFixed(4)
+    }
   }
-  return balanceArray
+  return dataArray
 }
 
 async function writeToInflux(dataArray, chatId) {
@@ -100,6 +120,12 @@ async function writeToInflux(dataArray, chatId) {
     allAssets.inBTC += +dataArray[index].totalBTC
     writeApi.writePoint(pointBTC)
 
+    const pointPriceBTC = new Point(chatId).floatField(
+      'priceBTC',
+      +dataArray[index].priceBTC
+    )
+    writeApi.writePoint(pointPriceBTC)
+
     const pointUSDT = new Point(chatId).floatField(
       'inUSDT',
       +dataArray[index].totalUSDT
@@ -108,15 +134,11 @@ async function writeToInflux(dataArray, chatId) {
 
     writeApi.writePoint(pointUSDT)
 
-    writeApi
-      .close()
-      .then(() => {
-        console.log('FINISHED')
-      })
-      .catch((e) => {
-        console.error(e)
-        console.log('\\nFinished ERROR')
-      })
+    const pointPriceUSDT = new Point(chatId).floatField(
+      'priceUSDT',
+      +dataArray[index].priceUSDT
+    )
+    writeApi.writePoint(pointPriceUSDT)
   }
   writeApi.useDefaultTags({ coin: 'All' })
   const AllinBTC = new Point(chatId).floatField('inBTC', +allAssets.inBTC)
@@ -124,5 +146,5 @@ async function writeToInflux(dataArray, chatId) {
 
   const AllinUSDT = new Point(chatId).floatField('inUSDT', +allAssets.inUSDT)
   writeApi.writePoint(AllinUSDT)
-  writeApi.close()
+  await writeApi.close()
 }
